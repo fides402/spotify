@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<body>
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+
+  // manda il code alla tua app Google Build
+  window.opener?.postMessage({ spotify_code: code }, "*");
+
+  document.body.innerText = "Auth OK. Puoi chiudere.";
+</script>
+</body>
+</html>
