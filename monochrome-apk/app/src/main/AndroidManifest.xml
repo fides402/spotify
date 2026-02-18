@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.monochrome.app"
-    android:versionCode="1"
-    android:versionName="1.0">
+    android:versionCode="3"
+    android:versionName="3.0">
 
     <!-- Network -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Keep audio playing when screen turns off -->
+    <!-- Keep CPU alive when screen turns off (required for background audio) -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Storage for downloads -->
@@ -19,9 +19,12 @@
     <!-- Audio recording (for mic-using visualisers) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Media controls (notification player) -->
+    <!-- Foreground service (keeps the process alive during background audio) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Android 13+: notification permission for the foreground service notification -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="Monochrome"
@@ -52,6 +55,19 @@
                 <data android:scheme="https" android:host="monochrome.tf" />
             </intent-filter>
         </activity>
+
+        <!--
+            AudioService: foreground service with mediaPlayback type.
+            The OS treats FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK processes with
+            very high priority — they are essentially never killed for memory
+            or battery, as long as the notification is showing.
+            exported=false: only this app can bind/start it.
+        -->
+        <service
+            android:name=".AudioService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
     </application>
 
 </manifest>
