@@ -96,7 +96,9 @@ public class MainActivity extends Activity {
             " })();" +
 
             // ── 4. Playback state bridge → native notification ──────────────
-            // Now also extracts artwork URL from mediaSession or og:image.
+            // Intercepts navigator.mediaSession.metadata setter so artwork is
+            // reported as soon as Spotify sets new track metadata, avoiding the
+            // race condition where the play event fires before metadata updates.
             " (function(){" +
             "   if (window._mcBridgeInit) return;" +
             "   window._mcBridgeInit = true;" +
@@ -106,12 +108,12 @@ public class MainActivity extends Activity {
             "     try {" +
             "       var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
             "       if (meta && meta.artwork && meta.artwork.length > 0) {" +
-            "         var best = null; var bestSize = 0;" +
+            "         var best = null; var bestSize = -1;" +
             "         for (var i = 0; i < meta.artwork.length; i++) {" +
             "           var a = meta.artwork[i];" +
             "           if (!a || !a.src) continue;" +
             "           var sz = a.sizes ? parseInt(a.sizes.split('x')[0]) || 0 : 0;" +
-            "           if (sz >= bestSize) { best = a.src; bestSize = sz; }" +
+            "           if (sz > bestSize) { best = a.src; bestSize = sz; }" +
             "         }" +
             "         if (best) return best;" +
             "       }" +
@@ -131,7 +133,7 @@ public class MainActivity extends Activity {
             "     artist = artist || '';" +
             "     artUrl = artUrl || '';" +
             "     pos = pos || 0; dur = dur || 0;" +
-            "     if (!playing && playing === lastPlaying && title === lastTitle &&" +
+            "     if (playing === lastPlaying && title === lastTitle &&" +
             "         artist === lastArtist && artUrl === lastArt) return;" +
             "     lastPlaying = playing; lastTitle = title;" +
             "     lastArtist = artist;  lastArt   = artUrl;" +
@@ -142,6 +144,43 @@ public class MainActivity extends Activity {
             "         String(Math.round(dur * 1000)));" +
             "     }" +
             "   }" +
+
+            // Snapshot current state and report immediately
+            "   function snapNow() {" +
+            "     var playing = false; var curEl = null;" +
+            "     document.querySelectorAll('audio,video').forEach(function(el) {" +
+            "       if (!el.paused && !el.ended && el.readyState > 2) { playing = true; curEl = el; }" +
+            "       else if (!curEl) curEl = el;" +
+            "     });" +
+            "     var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
+            "     var title  = meta ? (meta.title  || document.title) : document.title;" +
+            "     var artist = meta ? (meta.artist || '')             : '';" +
+            "     var artUrl = getArtworkUrl();" +
+            "     var pos = curEl ? (curEl.currentTime || 0) : 0;" +
+            "     var dur = curEl ? (curEl.duration || 0) : 0;" +
+            "     report(playing, title, artist, artUrl, pos, dur);" +
+            "   }" +
+
+            // Hook MediaSession.metadata setter to catch Spotify track changes
+            "   try {" +
+            "     var msProto = Object.getPrototypeOf(navigator.mediaSession);" +
+            "     var desc = Object.getOwnPropertyDescriptor(msProto, 'metadata');" +
+            "     if (desc && desc.set) {" +
+            "       var origSet = desc.set;" +
+            "       Object.defineProperty(msProto, 'metadata', {" +
+            "         get: desc.get," +
+            "         set: function(val) {" +
+            "           origSet.call(this, val);" +
+            "           if (this === navigator.mediaSession) {" +
+            // Small delay so Spotify finishes setting all fields before we read
+            "             lastArt = ''; lastTitle = ''; lastArtist = '';" +
+            "             setTimeout(snapNow, 150);" +
+            "           }" +
+            "         }," +
+            "         configurable: true" +
+            "       });" +
+            "     }" +
+            "   } catch(e) {}" +
 
             "   function hookMedia(el) {" +
             "     if (el._mcHooked) return; el._mcHooked = true;" +
@@ -161,31 +200,18 @@ public class MainActivity extends Activity {
             "   document.querySelectorAll('audio,video').forEach(hookMedia);" +
 
             "   var obs = new MutationObserver(function(muts) {" +
-                                                       "     muts.forEach(function(m) {" +
-                                                       "       m.addedNodes.forEach(function(n) {" +
-                                                       "         if (n.nodeType !== 1) return;" +
-                                                       "         if (n.tagName === 'AUDIO' || n.tagName === 'VIDEO') hookMedia(n);" +
-                                                       "         if (n.querySelectorAll) n.querySelectorAll('audio,video').forEach(hookMedia);" +
-                                                       "       });" +
-                                                       "     });" +
-                                                       "   });" +
-                                                       "   if (document.body) obs.observe(document.body, {childList:true, subtree:true});" +
+            "     muts.forEach(function(m) {" +
+            "       m.addedNodes.forEach(function(n) {" +
+            "         if (n.nodeType !== 1) return;" +
+            "         if (n.tagName === 'AUDIO' || n.tagName === 'VIDEO') hookMedia(n);" +
+            "         if (n.querySelectorAll) n.querySelectorAll('audio,video').forEach(hookMedia);" +
+            "       });" +
+            "     });" +
+            "   });" +
+            "   if (document.body) obs.observe(document.body, {childList:true, subtree:true});" +
 
-                                                       "   setInterval(function() {" +
-                                                       "     var playing = false; var curEl = null;" +
-                                                       "     document.querySelectorAll('audio,video').forEach(function(el) {" +
-                                                       "       if (!el.paused && !el.ended && el.readyState > 2) { playing = true; curEl = el; }" +
-                                                       "       else if (!curEl) curEl = el;" +
-                                                       "     });" +
-                                                       "     var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
-            "     var title  = meta ? (meta.title  || document.title) : document.title;" +
-            "     var artist = meta ? (meta.artist || '')             : '';" +
-                                               "     var artUrl = getArtworkUrl();" +
-                                               "     var pos = curEl ? (curEl.currentTime || 0) : 0;" +
-                                               "     var dur = curEl ? (curEl.duration || 0) : 0;" +
-                                               "     report(playing, title, artist, artUrl, pos, dur);" +
-                                               "   }, 1000);" +
-                                               " })();" +
+            "   setInterval(snapNow, 1000);" +
+            " })();" +
 
                                                "})();";
 
