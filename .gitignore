@@ -1,2 +1,4 @@
 platform-34.zip
 monochrome-apk/build_manual/
+monochrome-apk/app/build/
+*.idsig
