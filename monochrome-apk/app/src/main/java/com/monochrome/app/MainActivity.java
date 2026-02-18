@@ -7,6 +7,7 @@ import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.Window;
@@ -26,16 +27,18 @@ import android.webkit.WebViewClient;
 
 public class MainActivity extends Activity {
 
-    static final String DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+    // Mobile Chrome UA → the site will render in mobile mode
+    static final String MOBILE_UA =
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/120.0.0.0 Safari/537.36";
+            "Chrome/120.0.0.0 Mobile Safari/537.36";
 
     static final String TARGET_URL = "https://monochrome.tf/";
     static final int FILE_CHOOSER_REQUEST = 1001;
 
     WebView webView;
     ValueCallback<Uri[]> filePathCallback;
+    PowerManager.WakeLock wakeLock;
 
     // ── Static WebViewClient ─────────────────────────────────────────────────
     static class MonoWebViewClient extends WebViewClient {
@@ -63,10 +66,16 @@ public class MainActivity extends Activity {
 
         public void onPageFinished(WebView view, String url) {
             super.onPageFinished(view, url);
+            // Enforce proper mobile viewport so the site stays in mobile layout
             view.evaluateJavascript(
                     "(function(){" +
-                    "var m=document.querySelector('meta[name=viewport]');" +
-                    "if(m) m.content='width=1280';" +
+                    "  var m = document.querySelector('meta[name=viewport]');" +
+                    "  if (!m) {" +
+                    "    m = document.createElement('meta');" +
+                    "    m.name = 'viewport';" +
+                    "    document.head.appendChild(m);" +
+                    "  }" +
+                    "  m.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0';" +
                     "})();",
                     null);
         }
@@ -133,6 +142,14 @@ public class MainActivity extends Activity {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+        // PARTIAL_WAKE_LOCK keeps the CPU running when the screen turns off,
+        // which is required for the WebView's audio thread to keep playing.
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "monochrome:audiowake");
+        wakeLock.acquire();
+
         webView = new WebView(this);
         webView.setBackgroundColor(Color.BLACK);
         setContentView(webView);
@@ -149,9 +166,12 @@ public class MainActivity extends Activity {
     private void configureWebView() {
         WebSettings s = webView.getSettings();
 
-        s.setUserAgentString(DESKTOP_UA);
+        s.setUserAgentString(MOBILE_UA);
+
+        // Mobile layout: respect the site's own viewport meta tag at 1:1 scale
         s.setUseWideViewPort(true);
-        s.setLoadWithOverviewMode(true);
+        s.setLoadWithOverviewMode(false);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
             s.setLayoutAlgorithm(WebSettings.LayoutAlgorithm.NORMAL);
         }
@@ -227,7 +247,10 @@ public class MainActivity extends Activity {
 
     protected void onPause() {
         super.onPause();
-        webView.onPause();
+        // Do NOT call webView.onPause() or webView.pauseTimers() here —
+        // those methods suspend the WebView renderer and stop audio playback.
+        // Leaving the WebView running is what allows music to continue when
+        // the screen turns off or the user switches to another app.
     }
 
     protected void onResume() {
@@ -236,6 +259,9 @@ public class MainActivity extends Activity {
     }
 
     protected void onDestroy() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
         webView.destroy();
         super.onDestroy();
     }
