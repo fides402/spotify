@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1DB954" />
+  <title>Spotify Player</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #121212;
+      color: #fff;
+      font-family: 'Circular', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      user-select: none;
+    }
+
+    #login-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+      text-align: center;
+    }
+
+    #login-screen h1 { font-size: 2rem; font-weight: 700; }
+    #login-screen p { color: #b3b3b3; font-size: 0.95rem; }
+
+    .btn-green {
+      background: #1DB954;
+      color: #000;
+      border: none;
+      border-radius: 500px;
+      padding: 16px 48px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .btn-green:active { transform: scale(0.97); }
+
+    /* ── Player ── */
+    #player-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      max-width: 420px;
+      gap: 0;
+    }
+
+    /* Album art */
+    #artwork-wrap {
+      width: min(72vw, 300px);
+      height: min(72vw, 300px);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 24px 64px rgba(0,0,0,.6);
+      margin-bottom: 32px;
+      flex-shrink: 0;
+    }
+    #artwork-wrap img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+      transition: opacity .3s;
+    }
+    #artwork-wrap img.loading { opacity: 0; }
+
+    /* Track info */
+    .track-info {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .track-text { flex: 1; overflow: hidden; }
+    #track-name {
+      font-size: 1.35rem;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #track-artist {
+      font-size: 0.9rem;
+      color: #b3b3b3;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #btn-like {
+      background: none; border: none; cursor: pointer;
+      color: #b3b3b3; font-size: 1.5rem; padding: 8px;
+      flex-shrink: 0;
+    }
+    #btn-like.liked { color: #1DB954; }
+
+    /* Progress bar */
+    .progress-wrap {
+      width: 100%;
+      margin: 16px 0 4px;
+    }
+    #progress-bar {
+      width: 100%;
+      height: 4px;
+      border-radius: 2px;
+      appearance: none;
+      background: #404040;
+      cursor: pointer;
+      accent-color: #1DB954;
+    }
+    #progress-bar::-webkit-slider-thumb {
+      appearance: none;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: #fff;
+    }
+    .time-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      color: #b3b3b3;
+      margin-top: 4px;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      margin-top: 16px;
+    }
+    .ctrl-btn {
+      background: none; border: none; cursor: pointer;
+      color: #b3b3b3; font-size: 1.4rem; padding: 8px;
+    }
+    .ctrl-btn:active { transform: scale(0.88); }
+    .ctrl-btn.active { color: #1DB954; }
+
+    #btn-play-pause {
+      background: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 64px; height: 64px;
+      font-size: 1.6rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #000;
+      box-shadow: 0 4px 16px rgba(0,0,0,.4);
+    }
+    #btn-play-pause:active { transform: scale(0.93); }
+
+    /* Volume */
+    .volume-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      margin-top: 24px;
+    }
+    .vol-icon { color: #b3b3b3; font-size: 1rem; }
+    #volume-bar {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      appearance: none;
+      background: #404040;
+      accent-color: #1DB954;
+      cursor: pointer;
+    }
+
+    /* Error / status */
+    #status {
+      font-size: 0.82rem;
+      color: #b3b3b3;
+      text-align: center;
+      margin-top: 12px;
+      min-height: 1.2em;
+    }
+
+    /* Spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid #333;
+      border-top-color: #1DB954;
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+  </style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div style="font-size:4rem;">🎵</div>
+  <h1>Spotify Player</h1>
+  <p>Accedi con il tuo account Spotify per ascoltare la musica</p>
+  <button class="btn-green" id="btn-login">Accedi con Spotify</button>
+  <div id="status"></div>
+</div>
+
+<!-- PLAYER -->
+<div id="player-screen">
+  <div id="artwork-wrap">
+    <img id="artwork" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 300 300'%3E%3Crect width='300' height='300' fill='%23333'/%3E%3C/svg%3E" alt="Album art" />
+  </div>
+
+  <div class="track-info">
+    <div class="track-text">
+      <div id="track-name">—</div>
+      <div id="track-artist">—</div>
+    </div>
+    <button id="btn-like" title="Mi piace">♡</button>
+  </div>
+
+  <div class="progress-wrap">
+    <input type="range" id="progress-bar" min="0" max="100" value="0" step="0.1" />
+    <div class="time-row">
+      <span id="time-current">0:00</span>
+      <span id="time-total">0:00</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="ctrl-btn" id="btn-shuffle" title="Casuale">⇄</button>
+    <button class="ctrl-btn" id="btn-prev" title="Precedente">⏮</button>
+    <button id="btn-play-pause" title="Play/Pausa">▶</button>
+    <button class="ctrl-btn" id="btn-next" title="Successivo">⏭</button>
+    <button class="ctrl-btn" id="btn-repeat" title="Ripeti">↻</button>
+  </div>
+
+  <div class="volume-wrap">
+    <span class="vol-icon">🔈</span>
+    <input type="range" id="volume-bar" min="0" max="100" value="50" />
+    <span class="vol-icon">🔊</span>
+  </div>
+
+  <div id="status"></div>
+</div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────────
+const CLIENT_ID     = 'f4e5bdc766394d53a8f68b8beaabc0e4'; // <-- metti il tuo Client ID
+const REDIRECT_URI  = window.location.origin + '/callback.html';
+const SCOPES = [
+  'streaming',
+  'user-read-email',
+  'user-read-private',
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'user-read-currently-playing',
+  'user-library-read',
+  'user-library-modify',
+].join(' ');
+
+// ── PKCE helpers ─────────────────────────────────────────────────────────
+async function generateCodeVerifier() {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return btoa(String.fromCharCode(...array))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+async function generateCodeChallenge(verifier) {
+  const data   = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+// ── Token storage ─────────────────────────────────────────────────────────
+function saveToken(data) {
+  const exp = Date.now() + data.expires_in * 1000;
+  localStorage.setItem('sp_token',   data.access_token);
+  localStorage.setItem('sp_refresh', data.refresh_token || localStorage.getItem('sp_refresh') || '');
+  localStorage.setItem('sp_exp',     exp);
+}
+function getToken()   { return localStorage.getItem('sp_token'); }
+function isExpired()  { return Date.now() > (parseInt(localStorage.getItem('sp_exp') || '0') - 60000); }
+
+async function refreshToken() {
+  const refresh = localStorage.getItem('sp_refresh');
+  if (!refresh) return null;
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type:    'refresh_token',
+      refresh_token: refresh,
+      client_id:     CLIENT_ID,
+    }),
+  });
+  if (!res.ok) { localStorage.clear(); return null; }
+  const data = await res.json();
+  saveToken(data);
+  return data.access_token;
+}
+
+async function validToken() {
+  if (isExpired()) return await refreshToken();
+  return getToken();
+}
+
+// ── Spotify API ───────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const token = await validToken();
+  if (!token) throw new Error('no_token');
+  const res = await fetch('https://api.spotify.com/v1' + path, {
+    ...opts,
+    headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) },
+  });
+  if (res.status === 204 || res.status === 202 || res.status === 200 && !res.headers.get('content-type')?.includes('json')) {
+    return null;
+  }
+  if (!res.ok) throw new Error(res.status + ' ' + path);
+  return res.json();
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const loginScreen  = $('login-screen');
+const playerScreen = $('player-screen');
+const statusEl     = $('status');
+
+function showStatus(msg) { statusEl.textContent = msg; }
+function fmtTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+// ── Media Session API (Android notification) ─────────────────────────────
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+
+  navigator.mediaSession.setActionHandler('play',          () => pressPlay());
+  navigator.mediaSession.setActionHandler('pause',         () => pressPause());
+  navigator.mediaSession.setActionHandler('previoustrack', () => pressSkip('prev'));
+  navigator.mediaSession.setActionHandler('nexttrack',     () => pressSkip('next'));
+  navigator.mediaSession.setActionHandler('seekto', details => {
+    if (details.seekTime != null) seekTo(details.seekTime * 1000);
+  });
+}
+
+function updateMediaSession(track) {
+  if (!('mediaSession' in navigator)) return;
+
+  const artwork = track.album?.images || [];
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title:  track.name,
+    artist: track.artists?.map(a => a.name).join(', ') || '',
+    album:  track.album?.name || '',
+    artwork: artwork.map(img => ({
+      src:   img.url,
+      sizes: img.width + 'x' + img.height,
+      type:  'image/jpeg',
+    })),
+  });
+}
+
+function setMediaSessionPlayback(playing, positionSec, durationSec) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+  try {
+    navigator.mediaSession.setPositionState({
+      duration:     durationSec,
+      playbackRate: 1,
+      position:     positionSec,
+    });
+  } catch (_) {}
+}
+
+// ── Silent audio trick (keeps Media Session alive on Android) ────────────
+// Android Chrome requires an audio element to be playing to show
+// the notification. We use the Spotify preview URL when available,
+// otherwise a tiny silent audio loop.
+let audioEl = null;
+
+function ensureAudioElement() {
+  if (audioEl) return audioEl;
+  audioEl = new Audio();
+  audioEl.loop = true;
+  audioEl.volume = 0;
+  // 1-second silent MP3 (base64) – keeps the session active without sound
+  audioEl.src = 'data:audio/mpeg;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsgU291bmQgRWZmZWN0c0xpYnJhcnkAVFdPUgAAAAEAAANDcmVhdGVkIGJ5IEJpZ1NvdW5kQmFuawAA/+MYxAANCAYxUUAAAn+YlW8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+  document.body.appendChild(audioEl);
+  return audioEl;
+}
+
+function playAudioElement() {
+  const el = ensureAudioElement();
+  el.play().catch(() => {});
+}
+function pauseAudioElement() {
+  if (audioEl) audioEl.pause();
+}
+
+// ── Playback state ────────────────────────────────────────────────────────
+let currentTrack   = null;
+let isPlaying      = false;
+let progressMs     = 0;
+let durationMs     = 0;
+let pollInterval   = null;
+let progressTimer  = null;
+let shuffleOn      = false;
+let repeatMode     = 'off'; // off | context | track
+let seekingLocally = false;
+
+async function fetchPlayback() {
+  try {
+    const state = await api('/me/player?additional_types=track');
+    if (!state || !state.item) { showStatus('Nessuna riproduzione attiva'); return; }
+
+    const track = state.item;
+    isPlaying   = state.is_playing;
+    progressMs  = state.progress_ms;
+    durationMs  = track.duration_ms;
+    shuffleOn   = state.shuffle_state;
+    repeatMode  = state.repeat_state;
+
+    if (!currentTrack || currentTrack.id !== track.id) {
+      currentTrack = track;
+      renderTrack(track);
+      updateMediaSession(track);
+    }
+
+    $('btn-play-pause').textContent = isPlaying ? '⏸' : '▶';
+    $('btn-shuffle').classList.toggle('active', shuffleOn);
+    $('btn-repeat').classList.toggle('active', repeatMode !== 'off');
+
+    if (!seekingLocally) {
+      $('progress-bar').value = durationMs ? (progressMs / durationMs * 100) : 0;
+      $('time-current').textContent = fmtTime(progressMs);
+    }
+    $('time-total').textContent = fmtTime(durationMs);
+
+    setMediaSessionPlayback(isPlaying, progressMs / 1000, durationMs / 1000);
+
+    if (isPlaying) { playAudioElement(); startProgressTimer(); }
+    else           { pauseAudioElement(); stopProgressTimer(); }
+
+    showStatus('');
+  } catch (e) {
+    showStatus('Errore: ' + e.message);
+  }
+}
+
+function renderTrack(track) {
+  $('track-name').textContent   = track.name;
+  $('track-artist').textContent = track.artists?.map(a => a.name).join(', ') || '';
+
+  const img = $('artwork');
+  const url = track.album?.images?.[0]?.url;
+  if (url) {
+    img.classList.add('loading');
+    img.onload = () => img.classList.remove('loading');
+    img.src = url;
+  }
+}
+
+// Local progress ticker (smooth bar between polls)
+function startProgressTimer() {
+  stopProgressTimer();
+  let last = Date.now();
+  progressTimer = setInterval(() => {
+    if (!isPlaying || seekingLocally) return;
+    const now  = Date.now();
+    progressMs = Math.min(progressMs + (now - last), durationMs);
+    last = now;
+    $('progress-bar').value      = durationMs ? (progressMs / durationMs * 100) : 0;
+    $('time-current').textContent = fmtTime(progressMs);
+  }, 500);
+}
+function stopProgressTimer() {
+  if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────
+async function pressPlay()  {
+  try {
+    await api('/me/player/play',  { method: 'PUT' });
+    isPlaying = true;
+    $('btn-play-pause').textContent = '⏸';
+    navigator.mediaSession && (navigator.mediaSession.playbackState = 'playing');
+    playAudioElement();
+    startProgressTimer();
+  } catch(e) { showStatus('Errore play: ' + e.message); }
+}
+async function pressPause() {
+  try {
+    await api('/me/player/pause', { method: 'PUT' });
+    isPlaying = false;
+    $('btn-play-pause').textContent = '▶';
+    navigator.mediaSession && (navigator.mediaSession.playbackState = 'paused');
+    pauseAudioElement();
+    stopProgressTimer();
+  } catch(e) { showStatus('Errore pausa: ' + e.message); }
+}
+async function pressSkip(dir) {
+  const endpoint = dir === 'next' ? '/me/player/next' : '/me/player/previous';
+  try {
+    await api(endpoint, { method: 'POST' });
+    setTimeout(fetchPlayback, 400);
+  } catch(e) { showStatus('Errore skip: ' + e.message); }
+}
+async function seekTo(ms) {
+  try {
+    await api('/me/player/seek?position_ms=' + Math.round(ms), { method: 'PUT' });
+    progressMs = ms;
+    $('time-current').textContent = fmtTime(ms);
+  } catch(e) {}
+}
+async function toggleShuffle() {
+  shuffleOn = !shuffleOn;
+  try {
+    await api('/me/player/shuffle?state=' + shuffleOn, { method: 'PUT' });
+    $('btn-shuffle').classList.toggle('active', shuffleOn);
+  } catch(e) { shuffleOn = !shuffleOn; }
+}
+async function cycleRepeat() {
+  const modes = ['off', 'context', 'track'];
+  repeatMode = modes[(modes.indexOf(repeatMode) + 1) % 3];
+  try {
+    await api('/me/player/repeat?state=' + repeatMode, { method: 'PUT' });
+    $('btn-repeat').classList.toggle('active', repeatMode !== 'off');
+    $('btn-repeat').textContent = repeatMode === 'track' ? '🔂' : '↻';
+  } catch(e) {}
+}
+
+// ── Progress bar interaction ──────────────────────────────────────────────
+$('progress-bar').addEventListener('pointerdown', () => { seekingLocally = true; });
+$('progress-bar').addEventListener('pointerup', async () => {
+  const targetMs = ($('progress-bar').value / 100) * durationMs;
+  await seekTo(targetMs);
+  seekingLocally = false;
+});
+$('progress-bar').addEventListener('input', () => {
+  const targetMs = ($('progress-bar').value / 100) * durationMs;
+  $('time-current').textContent = fmtTime(targetMs);
+});
+
+// Volume
+$('volume-bar').addEventListener('input', async () => {
+  const vol = Math.round($('volume-bar').value);
+  try { await api('/me/player/volume?volume_percent=' + vol, { method: 'PUT' }); } catch(_) {}
+});
+
+// Control buttons
+$('btn-play-pause').addEventListener('click', () => isPlaying ? pressPause() : pressPlay());
+$('btn-prev').addEventListener('click', () => pressSkip('prev'));
+$('btn-next').addEventListener('click', () => pressSkip('next'));
+$('btn-shuffle').addEventListener('click', toggleShuffle);
+$('btn-repeat').addEventListener('click', cycleRepeat);
+
+// ── OAuth PKCE login ─────────────────────────────────────────────────────
+$('btn-login').addEventListener('click', async () => {
+  const verifier   = await generateCodeVerifier();
+  const challenge  = await generateCodeChallenge(verifier);
+  localStorage.setItem('sp_verifier', verifier);
+
+  const params = new URLSearchParams({
+    client_id:             CLIENT_ID,
+    response_type:         'code',
+    redirect_uri:          REDIRECT_URI,
+    code_challenge_method: 'S256',
+    code_challenge:        challenge,
+    scope:                 SCOPES,
+  });
+  window.open('https://accounts.spotify.com/authorize?' + params, '_blank',
+    'width=500,height=700,toolbar=no,menubar=no');
+});
+
+// Receive auth code from callback.html popup
+window.addEventListener('message', async e => {
+  if (!e.data?.spotify_code) return;
+  const code     = e.data.spotify_code;
+  const verifier = localStorage.getItem('sp_verifier');
+
+  showStatus('Autenticazione in corso…');
+  try {
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type:    'authorization_code',
+        code,
+        redirect_uri:  REDIRECT_URI,
+        client_id:     CLIENT_ID,
+        code_verifier: verifier,
+      }),
+    });
+    if (!res.ok) throw new Error('Token error ' + res.status);
+    const data = await res.json();
+    saveToken(data);
+    startPlayer();
+  } catch(e) {
+    showStatus('Errore login: ' + e.message);
+  }
+});
+
+// ── Start player ──────────────────────────────────────────────────────────
+async function startPlayer() {
+  loginScreen.style.display  = 'none';
+  playerScreen.style.display = 'flex';
+  setupMediaSession();
+  await fetchPlayback();
+  pollInterval = setInterval(fetchPlayback, 5000);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+(async () => {
+  const token = getToken();
+  if (token) {
+    const valid = await validToken();
+    if (valid) { startPlayer(); return; }
+  }
+  loginScreen.style.display = 'flex';
+})();
+</script>
+</body>
+</html>
