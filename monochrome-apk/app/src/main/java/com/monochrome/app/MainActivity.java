@@ -252,9 +252,34 @@ public class MainActivity extends Activity {
                                     return;
                                 }
 
+                                // Play/pause: directly toggle audio/video element
+                                if (AudioService.ACTION_PLAY_PAUSE.equals(action)) {
+                                    webView.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            webView.evaluateJavascript(
+                                                "(function(){" +
+                                                "var els=document.querySelectorAll('audio,video');" +
+                                                "var toggled=false;" +
+                                                "els.forEach(function(el){" +
+                                                "  if(!el.paused&&!el.ended){el.pause();toggled=true;}" +
+                                                "});" +
+                                                "if(!toggled){els.forEach(function(el){" +
+                                                "  el.play().catch(function(){});" +
+                                                "});}" +
+                                                "if(!toggled&&els.length===0){" +
+                                                "  var btn=document.querySelector('[class*=\"play\"],[aria-label*=\"Play\"],[aria-label*=\"Pause\"],[data-testid*=\"play\"],[data-testid*=\"pause\"]');" +
+                                                "  if(btn)btn.click();" +
+                                                "}" +
+                                                "})();", null);
+                                        }
+                                    });
+                                    return;
+                                }
+
+                                // Next/prev: use keyboard event + navigator.mediaSession
                                 String jsKey;
-                                if      (AudioService.ACTION_PLAY_PAUSE.equals(action)) jsKey = "MediaPlayPause";
-                                else if (AudioService.ACTION_NEXT.equals(action))       jsKey = "MediaTrackNext";
+                                if      (AudioService.ACTION_NEXT.equals(action))       jsKey = "MediaTrackNext";
                                 else if (AudioService.ACTION_PREV.equals(action))       jsKey = "MediaTrackPrevious";
                                 else return;
 
@@ -263,8 +288,12 @@ public class MainActivity extends Activity {
                                                     @Override
                                                     public void run() {
                                                                             webView.evaluateJavascript(
+                                                                                                            "(function(){" +
                                                                                                             "document.dispatchEvent(new KeyboardEvent('keydown'," +
-                                                                                                            "{key:'" + key + "',bubbles:true}));", null);
+                                                                                                            "{key:'" + key + "',bubbles:true}));" +
+                                                                                                            "try{navigator.mediaSession.playbackState;}" +
+                                                                                                            "catch(e){}" +
+                                                                                                            "})();", null);
                                                     }
                                 });
                 }
@@ -429,15 +458,24 @@ public class MainActivity extends Activity {
     public boolean onKeyDown(int keyCode, KeyEvent event) {
                 if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ||
                                 keyCode == KeyEvent.KEYCODE_MEDIA_PLAY ||
-                                keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE ||
-                                keyCode == KeyEvent.KEYCODE_MEDIA_NEXT ||
+                                keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
+                    webView.evaluateJavascript(
+                        "(function(){" +
+                        "var els=document.querySelectorAll('audio,video');" +
+                        "var toggled=false;" +
+                        "els.forEach(function(el){" +
+                        "  if(!el.paused&&!el.ended){el.pause();toggled=true;}" +
+                        "});" +
+                        "if(!toggled){els.forEach(function(el){" +
+                        "  el.play().catch(function(){});" +
+                        "});}" +
+                        "})();", null);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT ||
                                 keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
-
-                    String jsKey;
-                                if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT)          jsKey = "MediaTrackNext";
-                                else if (keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS) jsKey = "MediaTrackPrevious";
-                                else                                                  jsKey = "MediaPlayPause";
-
+                    String jsKey = (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT)
+                        ? "MediaTrackNext" : "MediaTrackPrevious";
                     webView.evaluateJavascript(
                                             "document.dispatchEvent(new KeyboardEvent('keydown'," +
                                             "{key:'" + jsKey + "',bubbles:true}));", null);
