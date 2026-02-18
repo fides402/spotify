@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace 'com.monochrome.app'
-    compileSdkVersion "android-34-ext12"
+    compileSdk 34
 
     defaultConfig {
         applicationId "com.monochrome.app"
