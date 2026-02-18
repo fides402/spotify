@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - claude/monochrome-mobile-apk-iXLGp
+      - claude/fix-spotify-widget-HSGnS
     paths:
       - monochrome-apk/**
   workflow_dispatch:
