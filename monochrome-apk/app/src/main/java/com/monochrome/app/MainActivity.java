@@ -103,29 +103,43 @@ public class MainActivity extends Activity {
             "   var lastPlaying = null, lastTitle = '', lastArtist = '', lastArt = '';" +
 
             "   function getArtworkUrl() {" +
-            "     var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
-            "     if (meta && meta.artwork && meta.artwork.length > 0) {" +
-            "       var art = meta.artwork[meta.artwork.length - 1];" +
-            "       if (art && art.src) return art.src;" +
-            "     }" +
+            "     try {" +
+            "       var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
+            "       if (meta && meta.artwork && meta.artwork.length > 0) {" +
+            "         var best = null; var bestSize = 0;" +
+            "         for (var i = 0; i < meta.artwork.length; i++) {" +
+            "           var a = meta.artwork[i];" +
+            "           if (!a || !a.src) continue;" +
+            "           var sz = a.sizes ? parseInt(a.sizes.split('x')[0]) || 0 : 0;" +
+            "           if (sz >= bestSize) { best = a.src; bestSize = sz; }" +
+            "         }" +
+            "         if (best) return best;" +
+            "       }" +
+            "     } catch(e) {}" +
             "     var og = document.querySelector('meta[property=\"og:image\"]');" +
             "     if (og && og.content) return og.content;" +
             "     var tw = document.querySelector('meta[name=\"twitter:image\"]');" +
             "     if (tw && tw.content) return tw.content;" +
+            "     var img = document.querySelector('img[class*=\"cover\"],img[class*=\"artwork\"]," +
+            "       img[class*=\"album\"],img[class*=\"thumbnail\"]');" +
+            "     if (img && img.src && img.naturalWidth > 60) return img.src;" +
             "     return '';" +
             "   }" +
 
-            "   function report(playing, title, artist, artUrl) {" +
+            "   function report(playing, title, artist, artUrl, pos, dur) {" +
             "     title  = title  || '';" +
             "     artist = artist || '';" +
             "     artUrl = artUrl || '';" +
-            "     if (playing === lastPlaying && title === lastTitle &&" +
+            "     pos = pos || 0; dur = dur || 0;" +
+            "     if (!playing && playing === lastPlaying && title === lastTitle &&" +
             "         artist === lastArtist && artUrl === lastArt) return;" +
             "     lastPlaying = playing; lastTitle = title;" +
             "     lastArtist = artist;  lastArt   = artUrl;" +
             "     if (window.AndroidBridge) {" +
             "       AndroidBridge.updatePlayback(" +
-            "         playing ? 'true' : 'false', title, artist, artUrl);" +
+            "         playing ? 'true' : 'false', title, artist, artUrl," +
+            "         String(Math.round(pos * 1000))," +
+            "         String(Math.round(dur * 1000)));" +
             "     }" +
             "   }" +
 
@@ -136,7 +150,8 @@ public class MainActivity extends Activity {
             "       report(!el.paused && !el.ended," +
             "         meta ? meta.title || '' : document.title," +
             "         meta ? meta.artist || '' : ''," +
-            "         getArtworkUrl());" +
+            "         getArtworkUrl()," +
+            "         el.currentTime || 0, el.duration || 0);" +
             "     }" +
             "     el.addEventListener('play',  snap);" +
             "     el.addEventListener('pause', snap);" +
@@ -157,16 +172,19 @@ public class MainActivity extends Activity {
                                                        "   if (document.body) obs.observe(document.body, {childList:true, subtree:true});" +
 
                                                        "   setInterval(function() {" +
-                                                       "     var playing = false;" +
+                                                       "     var playing = false; var curEl = null;" +
                                                        "     document.querySelectorAll('audio,video').forEach(function(el) {" +
-                                                       "       if (!el.paused && !el.ended && el.readyState > 2) playing = true;" +
+                                                       "       if (!el.paused && !el.ended && el.readyState > 2) { playing = true; curEl = el; }" +
+                                                       "       else if (!curEl) curEl = el;" +
                                                        "     });" +
                                                        "     var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
             "     var title  = meta ? (meta.title  || document.title) : document.title;" +
             "     var artist = meta ? (meta.artist || '')             : '';" +
                                                "     var artUrl = getArtworkUrl();" +
-                                               "     report(playing, title, artist, artUrl);" +
-                                               "   }, 3000);" +
+                                               "     var pos = curEl ? (curEl.currentTime || 0) : 0;" +
+                                               "     var dur = curEl ? (curEl.duration || 0) : 0;" +
+                                               "     report(playing, title, artist, artUrl, pos, dur);" +
+                                               "   }, 1000);" +
                                                " })();" +
 
                                                "})();";
@@ -181,7 +199,8 @@ public class MainActivity extends Activity {
          */
         final class MonoJSBridge {
             @JavascriptInterface
-            public void updatePlayback(String isPlayingStr, String title, String artist, String artworkUrl) {
+            public void updatePlayback(String isPlayingStr, String title, String artist,
+                                       String artworkUrl, String positionMs, String durationMs) {
                             Intent i = new Intent(MainActivity.this, AudioService.class);
                             i.setAction(AudioService.ACTION_UPDATE);
                             i.putExtra(AudioService.EXTRA_IS_PLAYING, "true".equals(isPlayingStr));
@@ -190,15 +209,25 @@ public class MainActivity extends Activity {
                             if (artworkUrl != null && !artworkUrl.isEmpty()) {
                                                 i.putExtra(AudioService.EXTRA_ARTWORK_URL, artworkUrl);
                             }
+                            try { i.putExtra(AudioService.EXTRA_POSITION, Long.parseLong(positionMs)); }
+                            catch (NumberFormatException e) { /* ignore */ }
+                            try { i.putExtra(AudioService.EXTRA_DURATION, Long.parseLong(durationMs)); }
+                            catch (NumberFormatException e) { /* ignore */ }
                             startService(i);
             }
 
-                                                                         /** Backwards-compatible 3-arg overload (called by old JS still in cache). */
+            /** Backwards-compatible 4-arg overload (called by old JS still in cache). */
+            @JavascriptInterface
+            public void updatePlayback(String isPlayingStr, String title, String artist, String artworkUrl) {
+                updatePlayback(isPlayingStr, title, artist, artworkUrl, "0", "0");
+            }
+
+            /** Backwards-compatible 3-arg overload (called by old JS still in cache). */
             @JavascriptInterface
             public void updatePlayback(String isPlayingStr, String title, String artist) {
-                updatePlayback(isPlayingStr, title, artist, "");
-}
-                                                                }
+                updatePlayback(isPlayingStr, title, artist, "", "0", "0");
+            }
+        }
 
     // ── BroadcastReceiver: notification buttons → WebView ──────────────────
 
@@ -206,13 +235,29 @@ public class MainActivity extends Activity {
                 @Override
                 public void onReceive(Context context, Intent intent) {
                                 String action = intent.getAction();
+                                if (webView == null) return;
+
+                                // Handle seek from MediaSession seekbar
+                                if (AudioService.ACTION_SEEK.equals(action)) {
+                                    final long seekPos = intent.getLongExtra(AudioService.EXTRA_SEEK_POS, 0);
+                                    final double seekSec = seekPos / 1000.0;
+                                    webView.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            webView.evaluateJavascript(
+                                                "(function(){var m=document.querySelector('audio,video');" +
+                                                "if(m){m.currentTime=" + seekSec + ";}})();", null);
+                                        }
+                                    });
+                                    return;
+                                }
+
                                 String jsKey;
                                 if      (AudioService.ACTION_PLAY_PAUSE.equals(action)) jsKey = "MediaPlayPause";
                                 else if (AudioService.ACTION_NEXT.equals(action))       jsKey = "MediaTrackNext";
                                 else if (AudioService.ACTION_PREV.equals(action))       jsKey = "MediaTrackPrevious";
                                 else return;
 
-                    if (webView == null) return;
                                 final String key = jsKey;
                                 webView.post(new Runnable() {
                                                     @Override
@@ -320,6 +365,7 @@ public class MainActivity extends Activity {
                 filter.addAction(AudioService.ACTION_PLAY_PAUSE);
                 filter.addAction(AudioService.ACTION_NEXT);
                 filter.addAction(AudioService.ACTION_PREV);
+                filter.addAction(AudioService.ACTION_SEEK);
                 if (Build.VERSION.SDK_INT >= 33) {
                                 registerReceiver(mediaControlReceiver, filter, RECEIVER_NOT_EXPORTED);
                 } else {

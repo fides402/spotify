@@ -19,6 +19,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -50,6 +51,10 @@ public class AudioService extends Service {
         static final String EXTRA_TITLE       = "title";
         static final String EXTRA_ARTIST      = "artist";
         static final String EXTRA_ARTWORK_URL = "artwork_url";
+        static final String EXTRA_POSITION    = "position_ms";
+        static final String EXTRA_DURATION    = "duration_ms";
+    static final String ACTION_SEEK       = "com.monochrome.app.SEEK";
+        static final String EXTRA_SEEK_POS    = "seek_position_ms";
 
     private MediaSession mediaSession;
         private NotificationManager notifManager;
@@ -60,6 +65,8 @@ public class AudioService extends Service {
         private String  trackArtist = "";
         private String  artworkUrl  = "";
         private Bitmap  artworkBitmap = null;
+        private long    positionMs    = 0;
+        private long    durationMs    = 0;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -85,10 +92,15 @@ public class AudioService extends Service {
 
             } else if (ACTION_UPDATE.equals(action)) {
                             // State reported by the web app via AndroidBridge.updatePlayback()
+                        boolean wasPlaying = isPlaying;
+                            String oldTitle = trackTitle;
+                            String oldArtist = trackArtist;
                         isPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, isPlaying);
                             String t = intent.getStringExtra(EXTRA_TITLE);
                             String a = intent.getStringExtra(EXTRA_ARTIST);
                             String u = intent.getStringExtra(EXTRA_ARTWORK_URL);
+                            positionMs = intent.getLongExtra(EXTRA_POSITION, positionMs);
+                            durationMs = intent.getLongExtra(EXTRA_DURATION, durationMs);
                             if (t != null && !t.isEmpty()) trackTitle  = t;
                             if (a != null)                 trackArtist = a;
 
@@ -99,6 +111,21 @@ public class AudioService extends Service {
                                             return START_STICKY; // notification will be posted after fetch
                         }
                             updateMediaSession();
+                        // Only rebuild notification when metadata or play state changes
+                        boolean metaChanged = (wasPlaying != isPlaying) ||
+                                !trackTitle.equals(oldTitle) || !trackArtist.equals(oldArtist);
+                        if (metaChanged || !foregroundStarted) {
+                            postForeground();
+                        }
+                            return START_STICKY;
+            } else if (ACTION_SEEK.equals(action)) {
+                        long seekPos = intent.getLongExtra(EXTRA_SEEK_POS, 0);
+                        positionMs = seekPos;
+                        updateMediaSession();
+                        Intent relay = new Intent(ACTION_SEEK);
+                        relay.setPackage(getPackageName());
+                        relay.putExtra(EXTRA_SEEK_POS, seekPos);
+                        sendBroadcast(relay);
             }
 
             // (re-)post notification; first call -> startForeground, subsequent -> notify()
@@ -173,6 +200,14 @@ public class AudioService extends Service {
                                 @Override public void onPause()           { relay(ACTION_PLAY_PAUSE); }
                                 @Override public void onSkipToNext()      { relay(ACTION_NEXT); }
                                 @Override public void onSkipToPrevious()  { relay(ACTION_PREV); }
+                                @Override public void onSeekTo(long pos) {
+                                    positionMs = pos;
+                                    updateMediaSession();
+                                    Intent seek = new Intent(ACTION_SEEK);
+                                    seek.setPackage(getPackageName());
+                                    seek.putExtra(EXTRA_SEEK_POS, pos);
+                                    sendBroadcast(seek);
+                                }
                 });
                 mediaSession.setActive(true);
                 updateMediaSession();
@@ -199,6 +234,9 @@ public class AudioService extends Service {
                             metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART,  artworkBitmap);
                             metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ART,        artworkBitmap);
             }
+            if (durationMs > 0) {
+                            metaBuilder.putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs);
+            }
 
             mediaSession.setMetadata(metaBuilder.build());
 
@@ -209,8 +247,11 @@ public class AudioService extends Service {
                                                                                           PlaybackState.ACTION_PAUSE |
                                                                                           PlaybackState.ACTION_PLAY_PAUSE |
                                                                                           PlaybackState.ACTION_SKIP_TO_NEXT |
-                                                                                          PlaybackState.ACTION_SKIP_TO_PREVIOUS)
-                                                              .setState(stateVal, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                                                                                          PlaybackState.ACTION_SKIP_TO_PREVIOUS |
+                                                                                          PlaybackState.ACTION_SEEK_TO)
+                                                              .setState(stateVal, positionMs,
+                                                                        isPlaying ? 1.0f : 0f,
+                                                                        SystemClock.elapsedRealtime())
                                                               .build());
     }
 
