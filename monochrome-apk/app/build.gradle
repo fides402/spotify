@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.monochrome.app'
+    compileSdkVersion "android-34-ext12"
+
+    defaultConfig {
+        applicationId "com.monochrome.app"
+        minSdk 24          // Android 7.0+ — wide coverage, modern WebView
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+        debug {
+            applicationIdSuffix ".debug"
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    // Suppress lint issues that could block the build in CI
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    // No external dependencies — pure AOSP WebView wrapper
+}
