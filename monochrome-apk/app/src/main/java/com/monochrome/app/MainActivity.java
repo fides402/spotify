@@ -96,19 +96,25 @@ public class MainActivity extends Activity {
             " })();" +
 
             // ── 4. Playback state bridge → native notification ──────────────
-            // Intercepts navigator.mediaSession.metadata setter so artwork is
-            // reported as soon as Spotify sets new track metadata, avoiding the
-            // race condition where the play event fires before metadata updates.
             " (function(){" +
             "   if (window._mcBridgeInit) return;" +
             "   window._mcBridgeInit = true;" +
             "   var lastPlaying = null, lastTitle = '', lastArtist = '', lastArt = '';" +
+            // _capturedArtUrl: artwork grabbed directly from val.artwork when the
+            // MediaSession setter fires — avoids the race where the getter still
+            // returns old metadata right after the setter was called.
+            "   var _capturedArtUrl = '';" +
 
+            // Returns the best artwork URL, preferring what we captured from the
+            // MediaSession setter over a live getter read, to stay race-free.
+            // og:image / twitter:image are intentionally excluded because they
+            // are static page-level images unrelated to the current track.
             "   function getArtworkUrl() {" +
+            "     if (_capturedArtUrl) return _capturedArtUrl;" +
             "     try {" +
             "       var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
             "       if (meta && meta.artwork && meta.artwork.length > 0) {" +
-            "         var best = null; var bestSize = -1;" +
+            "         var best = ''; var bestSize = -1;" +
             "         for (var i = 0; i < meta.artwork.length; i++) {" +
             "           var a = meta.artwork[i];" +
             "           if (!a || !a.src) continue;" +
@@ -118,14 +124,16 @@ public class MainActivity extends Activity {
             "         if (best) return best;" +
             "       }" +
             "     } catch(e) {}" +
-            "     var og = document.querySelector('meta[property=\"og:image\"]');" +
-            "     if (og && og.content) return og.content;" +
-            "     var tw = document.querySelector('meta[name=\"twitter:image\"]');" +
-            "     if (tw && tw.content) return tw.content;" +
-            "     var img = document.querySelector('img[class*=\"cover\"],img[class*=\"artwork\"]," +
-            "       img[class*=\"album\"],img[class*=\"thumbnail\"]');" +
-            "     if (img && img.src && img.naturalWidth > 60) return img.src;" +
-            "     return '';" +
+            // DOM fallback: square-ish img elements that look like album art
+            "     var best = ''; var bestScore = 0;" +
+            "     document.querySelectorAll('img').forEach(function(img) {" +
+            "       if (!img.src || !img.complete || img.naturalWidth < 80) return;" +
+            "       var ratio = img.naturalWidth / Math.max(img.naturalHeight, 1);" +
+            "       if (ratio < 0.5 || ratio > 2.0) return;" +
+            "       var score = img.naturalWidth * img.naturalHeight;" +
+            "       if (score > bestScore) { best = img.src; bestScore = score; }" +
+            "     });" +
+            "     return best;" +
             "   }" +
 
             "   function report(playing, title, artist, artUrl, pos, dur) {" +
@@ -145,7 +153,6 @@ public class MainActivity extends Activity {
             "     }" +
             "   }" +
 
-            // Snapshot current state and report immediately
             "   function snapNow() {" +
             "     var playing = false; var curEl = null;" +
             "     document.querySelectorAll('audio,video').forEach(function(el) {" +
@@ -161,21 +168,34 @@ public class MainActivity extends Activity {
             "     report(playing, title, artist, artUrl, pos, dur);" +
             "   }" +
 
-            // Hook MediaSession.metadata setter to catch Spotify track changes
+            // Hook MediaSession.prototype.metadata setter.
+            // Captures artwork directly from the MediaMetadata value passed to
+            // the setter — this is the only race-free way to get track artwork.
             "   try {" +
-            "     var msProto = Object.getPrototypeOf(navigator.mediaSession);" +
-            "     var desc = Object.getOwnPropertyDescriptor(msProto, 'metadata');" +
-            "     if (desc && desc.set) {" +
-            "       var origSet = desc.set;" +
-            "       Object.defineProperty(msProto, 'metadata', {" +
-            "         get: desc.get," +
+            "     var _msDesc = Object.getOwnPropertyDescriptor(MediaSession.prototype, 'metadata');" +
+            "     if (!_msDesc) _msDesc = Object.getOwnPropertyDescriptor(" +
+            "       Object.getPrototypeOf(navigator.mediaSession), 'metadata');" +
+            "     if (_msDesc && _msDesc.set) {" +
+            "       var _origMsSet = _msDesc.set;" +
+            "       Object.defineProperty(MediaSession.prototype, 'metadata', {" +
+            "         get: _msDesc.get," +
             "         set: function(val) {" +
-            "           origSet.call(this, val);" +
-            "           if (this === navigator.mediaSession) {" +
-            // Small delay so Spotify finishes setting all fields before we read
-            "             lastArt = ''; lastTitle = ''; lastArtist = '';" +
-            "             setTimeout(snapNow, 150);" +
+            "           _origMsSet.call(this, val);" +
+            "           if (val && val.artwork && val.artwork.length > 0) {" +
+            "             var best = ''; var bestSize = -1;" +
+            "             for (var i = 0; i < val.artwork.length; i++) {" +
+            "               var a = val.artwork[i];" +
+            "               if (!a || !a.src) continue;" +
+            "               var sz = a.sizes ? parseInt(a.sizes.split('x')[0]) || 0 : 0;" +
+            "               if (sz > bestSize) { best = a.src; bestSize = sz; }" +
+            "             }" +
+            "             if (best) { _capturedArtUrl = best; }" +
+            "           } else {" +
+            "             _capturedArtUrl = '';" +
             "           }" +
+            // Force re-report with new metadata after a tick
+            "           lastArt = ''; lastTitle = ''; lastArtist = '';" +
+            "           setTimeout(snapNow, 100);" +
             "         }," +
             "         configurable: true" +
             "       });" +
@@ -303,24 +323,33 @@ public class MainActivity extends Activity {
                                     return;
                                 }
 
-                                // Next/prev: use keyboard event + navigator.mediaSession
-                                String jsKey;
-                                if      (AudioService.ACTION_NEXT.equals(action))       jsKey = "MediaTrackNext";
-                                else if (AudioService.ACTION_PREV.equals(action))       jsKey = "MediaTrackPrevious";
-                                else return;
-
-                                final String key = jsKey;
+                                // Next/prev: keyboard events on document+window, then DOM button click
+                                final boolean isNext = AudioService.ACTION_NEXT.equals(action);
+                                if (!isNext && !AudioService.ACTION_PREV.equals(action)) return;
                                 webView.post(new Runnable() {
-                                                    @Override
-                                                    public void run() {
-                                                                            webView.evaluateJavascript(
-                                                                                                            "(function(){" +
-                                                                                                            "document.dispatchEvent(new KeyboardEvent('keydown'," +
-                                                                                                            "{key:'" + key + "',bubbles:true}));" +
-                                                                                                            "try{navigator.mediaSession.playbackState;}" +
-                                                                                                            "catch(e){}" +
-                                                                                                            "})();", null);
-                                                    }
+                                    @Override
+                                    public void run() {
+                                        String kbKey = isNext ? "MediaTrackNext" : "MediaTrackPrevious";
+                                        // Button selectors: try Spotify web testids, aria-labels (EN+IT), class names
+                                        String sel = isNext
+                                            ? "'[data-testid*=\"next\"],[data-testid*=\"skip-forward\"]," +
+                                              "[aria-label*=\"Next\"],[aria-label*=\"next\"]," +
+                                              "[aria-label*=\"Successivo\"],[aria-label*=\"Avanti\"]," +
+                                              "[class*=\"next\"],[class*=\"Next\"]'"
+                                            : "'[data-testid*=\"prev\"],[data-testid*=\"skip-back\"]," +
+                                              "[aria-label*=\"Prev\"],[aria-label*=\"prev\"]," +
+                                              "[aria-label*=\"Precedente\"],[aria-label*=\"Indietro\"]," +
+                                              "[class*=\"prev\"],[class*=\"Prev\"]'";
+                                        webView.evaluateJavascript(
+                                            "(function(){" +
+                                            "var kev=new KeyboardEvent('keydown',{key:'" + kbKey + "'," +
+                                            "  code:'" + kbKey + "',bubbles:true,cancelable:true});" +
+                                            "document.dispatchEvent(kev);" +
+                                            "window.dispatchEvent(kev);" +
+                                            "var btn=document.querySelector(" + sel + ");" +
+                                            "if(btn){btn.click();}" +
+                                            "})();", null);
+                                    }
                                 });
                 }
     };
@@ -500,12 +529,24 @@ public class MainActivity extends Activity {
                 }
                 if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT ||
                                 keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
-                    String jsKey = (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT)
-                        ? "MediaTrackNext" : "MediaTrackPrevious";
+                    final boolean isNext = (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT);
+                    String kbKey = isNext ? "MediaTrackNext" : "MediaTrackPrevious";
+                    String sel = isNext
+                        ? "'[data-testid*=\"next\"],[data-testid*=\"skip-forward\"]," +
+                          "[aria-label*=\"Next\"],[aria-label*=\"next\"]," +
+                          "[aria-label*=\"Successivo\"],[class*=\"next\"],[class*=\"Next\"]'"
+                        : "'[data-testid*=\"prev\"],[data-testid*=\"skip-back\"]," +
+                          "[aria-label*=\"Prev\"],[aria-label*=\"prev\"]," +
+                          "[aria-label*=\"Precedente\"],[class*=\"prev\"],[class*=\"Prev\"]'";
                     webView.evaluateJavascript(
-                                            "document.dispatchEvent(new KeyboardEvent('keydown'," +
-                                            "{key:'" + jsKey + "',bubbles:true}));", null);
-                                return true;
+                        "(function(){" +
+                        "var kev=new KeyboardEvent('keydown',{key:'" + kbKey + "'," +
+                        "  code:'" + kbKey + "',bubbles:true,cancelable:true});" +
+                        "document.dispatchEvent(kev);window.dispatchEvent(kev);" +
+                        "var btn=document.querySelector(" + sel + ");" +
+                        "if(btn)btn.click();" +
+                        "})();", null);
+                    return true;
                 }
                 return super.onKeyDown(keyCode, event);
     }
