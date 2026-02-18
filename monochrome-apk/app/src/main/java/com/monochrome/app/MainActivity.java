@@ -1,7 +1,10 @@
 package com.monochrome.app;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
@@ -16,6 +19,7 @@ import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
+import android.webkit.JavascriptInterface;
 import android.webkit.JsResult;
 import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
@@ -59,6 +63,10 @@ public class MainActivity extends Activity {
     //    that any context that gets auto-suspended (OS-level) is immediately
     //    re-resumed. This prevents the "music stops 30 s after screen off"
     //    symptom caused by the OS suspending the audio thread.
+    //
+    // 4. Playback bridge: monitors HTMLMediaElement and navigator.mediaSession
+    //    and reports state (isPlaying, title, artist) to the native layer via
+    //    AndroidBridge.updatePlayback() so the notification stays in sync.
     static final String INJECT_JS =
         "(function(){" +
 
@@ -108,7 +116,117 @@ public class MainActivity extends Activity {
         "    }, 2000);" +
         "  })();" +
 
+        // ── 4. Playback state bridge → native notification ────────────────
+        // Reports play/pause state and track metadata to AudioService so that
+        // the notification player card and lock-screen controls stay in sync.
+        "  (function(){" +
+        "    if (window._mcBridgeInit) return;" +  // idempotent across multiple page-finished calls
+        "    window._mcBridgeInit = true;" +
+        "    var lastPlaying = null, lastTitle = '', lastArtist = '';" +
+
+        "    function report(playing, title, artist) {" +
+        "      title  = title  || '';" +
+        "      artist = artist || '';" +
+        "      if (playing === lastPlaying && title === lastTitle && artist === lastArtist) return;" +
+        "      lastPlaying = playing; lastTitle = title; lastArtist = artist;" +
+        "      if (window.AndroidBridge) {" +
+        "        AndroidBridge.updatePlayback(playing ? 'true' : 'false', title, artist);" +
+        "      }" +
+        "    }" +
+
+        // Hook a single HTMLMediaElement
+        "    function hookMedia(el) {" +
+        "      if (el._mcHooked) return; el._mcHooked = true;" +
+        "      function snap() {" +
+        "        var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
+        "        report(!el.paused && !el.ended, meta ? meta.title || '' : document.title, meta ? meta.artist || '' : '');" +
+        "      }" +
+        "      el.addEventListener('play',  snap);" +
+        "      el.addEventListener('pause', snap);" +
+        "      el.addEventListener('ended', snap);" +
+        "    }" +
+
+        // Hook existing elements
+        "    document.querySelectorAll('audio,video').forEach(hookMedia);" +
+
+        // Hook elements added later
+        "    var obs = new MutationObserver(function(muts) {" +
+        "      muts.forEach(function(m) {" +
+        "        m.addedNodes.forEach(function(n) {" +
+        "          if (n.nodeType !== 1) return;" +
+        "          if (n.tagName === 'AUDIO' || n.tagName === 'VIDEO') hookMedia(n);" +
+        "          if (n.querySelectorAll) n.querySelectorAll('audio,video').forEach(hookMedia);" +
+        "        });" +
+        "      });" +
+        "    });" +
+        "    if (document.body) obs.observe(document.body, {childList:true, subtree:true});" +
+
+        // Poll every 3 s: catches metadata changes and any missed events
+        "    setInterval(function() {" +
+        "      var playing = false;" +
+        "      document.querySelectorAll('audio,video').forEach(function(el) {" +
+        "        if (!el.paused && !el.ended && el.readyState > 2) playing = true;" +
+        "      });" +
+        "      var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
+        "      var title  = meta ? (meta.title  || document.title) : document.title;" +
+        "      var artist = meta ? (meta.artist || '') : '';" +
+        "      report(playing, title, artist);" +
+        "    }, 3000);" +
+        "  })();" +
+
         "})();";
+
+    // ── JS bridge: web app → native ──────────────────────────────────────────
+
+    /**
+     * Exposed to JavaScript as window.AndroidBridge.
+     * Called by the injected JS whenever playback state or track info changes.
+     * Runs on a background WebView thread → must not touch the UI directly.
+     */
+    final class MonoJSBridge {
+        @JavascriptInterface
+        public void updatePlayback(String isPlayingStr, String title, String artist) {
+            Intent i = new Intent(MainActivity.this, AudioService.class);
+            i.setAction(AudioService.ACTION_UPDATE);
+            i.putExtra(AudioService.EXTRA_IS_PLAYING, "true".equals(isPlayingStr));
+            i.putExtra(AudioService.EXTRA_TITLE,      title);
+            i.putExtra(AudioService.EXTRA_ARTIST,     artist);
+            startService(i);
+        }
+    }
+
+    // ── BroadcastReceiver: notification buttons → WebView ────────────────────
+
+    /**
+     * Receives media-control broadcasts from AudioService (button taps in the
+     * notification or lock-screen player) and dispatches the corresponding
+     * keyboard event to the web app.
+     */
+    private final BroadcastReceiver mediaControlReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            String jsKey;
+            if (AudioService.ACTION_PLAY_PAUSE.equals(action)) {
+                jsKey = "MediaPlayPause";
+            } else if (AudioService.ACTION_NEXT.equals(action)) {
+                jsKey = "MediaTrackNext";
+            } else if (AudioService.ACTION_PREV.equals(action)) {
+                jsKey = "MediaTrackPrevious";
+            } else {
+                return;
+            }
+            if (webView == null) return;
+            final String key = jsKey;
+            webView.post(new Runnable() {
+                @Override public void run() {
+                    webView.evaluateJavascript(
+                        "document.dispatchEvent(new KeyboardEvent('keydown'," +
+                        "{key:'" + key + "',bubbles:true}));", null);
+                }
+            });
+        }
+    };
 
     // ── Static WebViewClient ─────────────────────────────────────────────────
     static class MonoWebViewClient extends WebViewClient {
@@ -218,6 +336,19 @@ public class MainActivity extends Activity {
             }
         }
 
+        // Register receiver for media-control broadcasts from AudioService.
+        // Dynamically-registered receivers remain active while the Activity is
+        // alive (even paused), so notification buttons work with screen off.
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(AudioService.ACTION_PLAY_PAUSE);
+        filter.addAction(AudioService.ACTION_NEXT);
+        filter.addAction(AudioService.ACTION_PREV);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(mediaControlReceiver, filter, RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(mediaControlReceiver, filter);
+        }
+
         // Start the foreground service. This is the single most important thing
         // for reliable background audio on Android: a foreground service with
         // FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK tells the OS that this process
@@ -269,6 +400,10 @@ public class MainActivity extends Activity {
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+
+        // Expose AndroidBridge to JavaScript so injected JS can report
+        // playback state changes back to the native notification.
+        webView.addJavascriptInterface(new MonoJSBridge(), "AndroidBridge");
 
         webView.setWebViewClient(new MonoWebViewClient(this));
         webView.setWebChromeClient(new MonoChromeClient(this));
@@ -361,6 +496,7 @@ public class MainActivity extends Activity {
     }
 
     protected void onDestroy() {
+        unregisterReceiver(mediaControlReceiver);
         stopService(new Intent(this, AudioService.class));
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
