@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 import android.net.http.SslError;
@@ -43,12 +44,56 @@ public class MainActivity extends Activity {
         ValueCallback<Uri[]> filePathCallback;
         PowerManager.WakeLock wakeLock;
 
-    // ── JS to inject once the page finishes loading ────────────────────────
-    //
-    // Compared to the previous version, the playback bridge (section 4) now
-    // also extracts the artwork URL from navigator.mediaSession.metadata or
-    // og:image, and passes it to AndroidBridge.updatePlayback() so
-    // AudioService can fetch and display it in the notification widget.
+    // ── HOOK_JS: injected at onPageStarted (before page scripts run) ─────────
+    // Hooks MediaSession.prototype so we capture Spotify's action handlers
+    // and artwork metadata as soon as they are registered, race-free.
+    static final String HOOK_JS = "(function(){" +
+            "if(window._mcHooksInstalled)return;" +
+            "window._mcHooksInstalled=true;" +
+            "window._mcHandlers={};" +
+            "window._capturedArtUrl='';" +
+            // Intercept setActionHandler to store Spotify's callbacks
+            "try{" +
+            "  var _oSAH=MediaSession.prototype.setActionHandler;" +
+            "  MediaSession.prototype.setActionHandler=function(a,h){" +
+            "    _oSAH.call(this,a,h);" +
+            "    if(this===navigator.mediaSession)window._mcHandlers[a]=h;" +
+            "  };" +
+            "}catch(e){}" +
+            // Intercept metadata setter to capture artwork directly from the value
+            "try{" +
+            "  var _d=Object.getOwnPropertyDescriptor(MediaSession.prototype,'metadata');" +
+            "  if(_d&&_d.set){" +
+            "    var _oS=_d.set;" +
+            "    Object.defineProperty(MediaSession.prototype,'metadata',{" +
+            "      get:_d.get," +
+            "      set:function(v){" +
+            "        _oS.call(this,v);" +
+            "        if(v&&v.artwork&&v.artwork.length>0){" +
+            "          var b='',bs=-1;" +
+            "          for(var i=0;i<v.artwork.length;i++){" +
+            "            var a=v.artwork[i];" +
+            "            if(!a||!a.src)continue;" +
+            "            var sz=a.sizes?parseInt(a.sizes)||0:0;" +
+            "            if(sz>bs){b=a.src;bs=sz;}" +
+            "          }" +
+            "          if(b)window._capturedArtUrl=b;" +
+            "        }else{window._capturedArtUrl='';}" +
+            "        if(window._mcSnapNow)setTimeout(window._mcSnapNow,100);" +
+            "      }," +
+            "      configurable:true" +
+            "    });" +
+            "  }" +
+            "}catch(e){}" +
+            // Helper: invoke one of Spotify's registered action handlers
+            "window._mcCallHandler=function(action){" +
+            "  var h=window._mcHandlers[action];" +
+            "  if(h){try{h({});return true;}catch(e){}}" +
+            "  return false;" +
+            "};" +
+            "})();";
+
+    // ── INJECT_JS: injected at onPageFinished (DOM is ready) ─────────────────
     static final String INJECT_JS = "(function(){" +
 
             // ── 1. Mobile viewport (only if needed) ────────────────────────
@@ -100,17 +145,11 @@ public class MainActivity extends Activity {
             "   if (window._mcBridgeInit) return;" +
             "   window._mcBridgeInit = true;" +
             "   var lastPlaying = null, lastTitle = '', lastArtist = '', lastArt = '';" +
-            // _capturedArtUrl: artwork grabbed directly from val.artwork when the
-            // MediaSession setter fires — avoids the race where the getter still
-            // returns old metadata right after the setter was called.
-            "   var _capturedArtUrl = '';" +
 
-            // Returns the best artwork URL, preferring what we captured from the
-            // MediaSession setter over a live getter read, to stay race-free.
-            // og:image / twitter:image are intentionally excluded because they
-            // are static page-level images unrelated to the current track.
             "   function getArtworkUrl() {" +
-            "     if (_capturedArtUrl) return _capturedArtUrl;" +
+            // Primary: artwork captured by HOOK_JS from MediaSession setter (race-free)
+            "     if (window._capturedArtUrl) return window._capturedArtUrl;" +
+            // Secondary: live read from navigator.mediaSession.metadata
             "     try {" +
             "       var meta = navigator.mediaSession && navigator.mediaSession.metadata;" +
             "       if (meta && meta.artwork && meta.artwork.length > 0) {" +
@@ -118,13 +157,13 @@ public class MainActivity extends Activity {
             "         for (var i = 0; i < meta.artwork.length; i++) {" +
             "           var a = meta.artwork[i];" +
             "           if (!a || !a.src) continue;" +
-            "           var sz = a.sizes ? parseInt(a.sizes.split('x')[0]) || 0 : 0;" +
+            "           var sz = a.sizes ? parseInt(a.sizes) || 0 : 0;" +
             "           if (sz > bestSize) { best = a.src; bestSize = sz; }" +
             "         }" +
             "         if (best) return best;" +
             "       }" +
             "     } catch(e) {}" +
-            // DOM fallback: square-ish img elements that look like album art
+            // Tertiary: largest square-ish <img> on page (heuristic for album art)
             "     var best = ''; var bestScore = 0;" +
             "     document.querySelectorAll('img').forEach(function(img) {" +
             "       if (!img.src || !img.complete || img.naturalWidth < 80) return;" +
@@ -167,40 +206,8 @@ public class MainActivity extends Activity {
             "     var dur = curEl ? (curEl.duration || 0) : 0;" +
             "     report(playing, title, artist, artUrl, pos, dur);" +
             "   }" +
-
-            // Hook MediaSession.prototype.metadata setter.
-            // Captures artwork directly from the MediaMetadata value passed to
-            // the setter — this is the only race-free way to get track artwork.
-            "   try {" +
-            "     var _msDesc = Object.getOwnPropertyDescriptor(MediaSession.prototype, 'metadata');" +
-            "     if (!_msDesc) _msDesc = Object.getOwnPropertyDescriptor(" +
-            "       Object.getPrototypeOf(navigator.mediaSession), 'metadata');" +
-            "     if (_msDesc && _msDesc.set) {" +
-            "       var _origMsSet = _msDesc.set;" +
-            "       Object.defineProperty(MediaSession.prototype, 'metadata', {" +
-            "         get: _msDesc.get," +
-            "         set: function(val) {" +
-            "           _origMsSet.call(this, val);" +
-            "           if (val && val.artwork && val.artwork.length > 0) {" +
-            "             var best = ''; var bestSize = -1;" +
-            "             for (var i = 0; i < val.artwork.length; i++) {" +
-            "               var a = val.artwork[i];" +
-            "               if (!a || !a.src) continue;" +
-            "               var sz = a.sizes ? parseInt(a.sizes.split('x')[0]) || 0 : 0;" +
-            "               if (sz > bestSize) { best = a.src; bestSize = sz; }" +
-            "             }" +
-            "             if (best) { _capturedArtUrl = best; }" +
-            "           } else {" +
-            "             _capturedArtUrl = '';" +
-            "           }" +
-            // Force re-report with new metadata after a tick
-            "           lastArt = ''; lastTitle = ''; lastArtist = '';" +
-            "           setTimeout(snapNow, 100);" +
-            "         }," +
-            "         configurable: true" +
-            "       });" +
-            "     }" +
-            "   } catch(e) {}" +
+            // Expose snapNow so HOOK_JS can trigger it when metadata changes
+            "   window._mcSnapNow = snapNow;" +
 
             "   function hookMedia(el) {" +
             "     if (el._mcHooked) return; el._mcHooked = true;" +
@@ -298,56 +305,77 @@ public class MainActivity extends Activity {
                                     return;
                                 }
 
-                                // Play/pause: directly toggle audio/video element
+                                // Play/pause: try MediaSession handler first, then audio element
                                 if (AudioService.ACTION_PLAY_PAUSE.equals(action)) {
                                     webView.post(new Runnable() {
                                         @Override
                                         public void run() {
                                             webView.evaluateJavascript(
                                                 "(function(){" +
-                                                "var els=document.querySelectorAll('audio,video');" +
-                                                "var toggled=false;" +
-                                                "els.forEach(function(el){" +
-                                                "  if(!el.paused&&!el.ended){el.pause();toggled=true;}" +
-                                                "});" +
-                                                "if(!toggled){els.forEach(function(el){" +
-                                                "  el.play().catch(function(){});" +
-                                                "});}" +
-                                                "if(!toggled&&els.length===0){" +
-                                                "  var btn=document.querySelector('[class*=\"play\"],[aria-label*=\"Play\"],[aria-label*=\"Pause\"],[data-testid*=\"play\"],[data-testid*=\"pause\"]');" +
-                                                "  if(btn)btn.click();" +
-                                                "}" +
+                                                // Strategy 1: call Spotify's own registered MediaSession handler
+                                                "  if(window._mcCallHandler){" +
+                                                "    var playing=false;" +
+                                                "    document.querySelectorAll('audio,video').forEach(function(e){" +
+                                                "      if(!e.paused&&!e.ended)playing=true;" +
+                                                "    });" +
+                                                "    if(window._mcCallHandler(playing?'pause':'play'))return;" +
+                                                "  }" +
+                                                // Strategy 2: direct audio element control
+                                                "  var els=document.querySelectorAll('audio,video');" +
+                                                "  var toggled=false;" +
+                                                "  els.forEach(function(el){" +
+                                                "    if(!el.paused&&!el.ended){el.pause();toggled=true;}" +
+                                                "  });" +
+                                                "  if(!toggled)els.forEach(function(el){el.play().catch(function(){});});" +
+                                                // Strategy 3: click play/pause button in DOM
+                                                "  if(!toggled&&els.length===0){" +
+                                                "    var b=document.querySelector('[data-testid*=\"play\"],[data-testid*=\"pause\"]," +
+                                                "      [aria-label*=\"Play\"],[aria-label*=\"Pause\"]," +
+                                                "      [aria-label*=\"Riproduci\"],[aria-label*=\"Pausa\"]');" +
+                                                "    if(b)b.click();" +
+                                                "  }" +
                                                 "})();", null);
                                         }
                                     });
                                     return;
                                 }
 
-                                // Next/prev: keyboard events on document+window, then DOM button click
+                                // Next/prev: 4-strategy relay to the web app
                                 final boolean isNext = AudioService.ACTION_NEXT.equals(action);
                                 if (!isNext && !AudioService.ACTION_PREV.equals(action)) return;
                                 webView.post(new Runnable() {
                                     @Override
                                     public void run() {
-                                        String kbKey = isNext ? "MediaTrackNext" : "MediaTrackPrevious";
-                                        // Button selectors: try Spotify web testids, aria-labels (EN+IT), class names
-                                        String sel = isNext
-                                            ? "'[data-testid*=\"next\"],[data-testid*=\"skip-forward\"]," +
-                                              "[aria-label*=\"Next\"],[aria-label*=\"next\"]," +
-                                              "[aria-label*=\"Successivo\"],[aria-label*=\"Avanti\"]," +
-                                              "[class*=\"next\"],[class*=\"Next\"]'"
-                                            : "'[data-testid*=\"prev\"],[data-testid*=\"skip-back\"]," +
-                                              "[aria-label*=\"Prev\"],[aria-label*=\"prev\"]," +
-                                              "[aria-label*=\"Precedente\"],[aria-label*=\"Indietro\"]," +
-                                              "[class*=\"prev\"],[class*=\"Prev\"]'";
+                                        String action = isNext ? "nexttrack" : "previoustrack";
+                                        String kbKey  = isNext ? "MediaTrackNext" : "MediaTrackPrevious";
+                                        int    kbCode  = isNext ? 176 : 177;
+                                        String nameSel = isNext
+                                            ? "[data-testid*='next'],[data-testid*='skip-forward']," +
+                                              "[aria-label*='Next'],[aria-label*='next']," +
+                                              "[aria-label*='Successivo'],[aria-label*='Avanti']"
+                                            : "[data-testid*='prev'],[data-testid*='skip-back']," +
+                                              "[aria-label*='Prev'],[aria-label*='prev']," +
+                                              "[aria-label*='Precedente'],[aria-label*='Indietro']";
                                         webView.evaluateJavascript(
                                             "(function(){" +
-                                            "var kev=new KeyboardEvent('keydown',{key:'" + kbKey + "'," +
-                                            "  code:'" + kbKey + "',bubbles:true,cancelable:true});" +
-                                            "document.dispatchEvent(kev);" +
-                                            "window.dispatchEvent(kev);" +
-                                            "var btn=document.querySelector(" + sel + ");" +
-                                            "if(btn){btn.click();}" +
+                                            // Strategy 1: call Spotify's own registered MediaSession handler
+                                            "  if(window._mcCallHandler&&window._mcCallHandler('" + action + "'))return;" +
+                                            // Strategy 2: keyboard events on both document and window
+                                            "  var k=new KeyboardEvent('keydown',{key:'" + kbKey + "',keyCode:" + kbCode + "," +
+                                            "    which:" + kbCode + ",bubbles:true,cancelable:true});" +
+                                            "  document.dispatchEvent(k);window.dispatchEvent(k);" +
+                                            // Strategy 3: click named next/prev button
+                                            "  var b=document.querySelector('" + nameSel + "');" +
+                                            "  if(b){b.click();return;}" +
+                                            // Strategy 4: find play button and click its sibling
+                                            "  var pb=document.querySelector('[data-testid*=\"play\"],[data-testid*=\"pause\"]," +
+                                            "    [aria-label*=\"Play\"],[aria-label*=\"Pause\"]," +
+                                            "    [aria-label*=\"Riproduci\"],[aria-label*=\"Pausa\"]');" +
+                                            "  if(pb&&pb.parentElement){" +
+                                            "    var btns=Array.from(pb.parentElement.querySelectorAll('button,[role=\"button\"]'));" +
+                                            "    var idx=btns.indexOf(pb);" +
+                                            "    if(idx>=0){var t=btns[" + (isNext ? "idx+1" : "idx-1") + "];if(t)t.click();}" +
+                                            "  }" +
                                             "})();", null);
                                     }
                                 });
@@ -374,8 +402,19 @@ public class MainActivity extends Activity {
                         handler.proceed();
         }
 
+        @Override
+        public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                        super.onPageStarted(view, url, favicon);
+                        // Install prototype hooks BEFORE page scripts run so we catch
+                        // Spotify's setActionHandler and metadata setter registrations.
+                        view.evaluateJavascript(HOOK_JS, null);
+        }
+
         public void onPageFinished(WebView view, String url) {
                         super.onPageFinished(view, url);
+                        // Re-run HOOK_JS in case onPageStarted fired too early,
+                        // then run the main bridge (guarded by _mcBridgeInit).
+                        view.evaluateJavascript(HOOK_JS, null);
                         view.evaluateJavascript(INJECT_JS, null);
         }
     }
@@ -516,35 +555,44 @@ public class MainActivity extends Activity {
                                 keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
                     webView.evaluateJavascript(
                         "(function(){" +
-                        "var els=document.querySelectorAll('audio,video');" +
-                        "var toggled=false;" +
-                        "els.forEach(function(el){" +
-                        "  if(!el.paused&&!el.ended){el.pause();toggled=true;}" +
-                        "});" +
-                        "if(!toggled){els.forEach(function(el){" +
-                        "  el.play().catch(function(){});" +
-                        "});}" +
+                        "  if(window._mcCallHandler){" +
+                        "    var p=false;" +
+                        "    document.querySelectorAll('audio,video').forEach(function(e){if(!e.paused&&!e.ended)p=true;});" +
+                        "    if(window._mcCallHandler(p?'pause':'play'))return;" +
+                        "  }" +
+                        "  var els=document.querySelectorAll('audio,video'),t=false;" +
+                        "  els.forEach(function(el){if(!el.paused&&!el.ended){el.pause();t=true;}});" +
+                        "  if(!t)els.forEach(function(el){el.play().catch(function(){});});" +
                         "})();", null);
                     return true;
                 }
                 if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT ||
                                 keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
                     final boolean isNext = (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT);
-                    String kbKey = isNext ? "MediaTrackNext" : "MediaTrackPrevious";
-                    String sel = isNext
-                        ? "'[data-testid*=\"next\"],[data-testid*=\"skip-forward\"]," +
-                          "[aria-label*=\"Next\"],[aria-label*=\"next\"]," +
-                          "[aria-label*=\"Successivo\"],[class*=\"next\"],[class*=\"Next\"]'"
-                        : "'[data-testid*=\"prev\"],[data-testid*=\"skip-back\"]," +
-                          "[aria-label*=\"Prev\"],[aria-label*=\"prev\"]," +
-                          "[aria-label*=\"Precedente\"],[class*=\"prev\"],[class*=\"Prev\"]'";
+                    String msAction = isNext ? "nexttrack" : "previoustrack";
+                    String kbKey    = isNext ? "MediaTrackNext" : "MediaTrackPrevious";
+                    int    kbCode   = isNext ? 176 : 177;
+                    String nameSel  = isNext
+                        ? "[data-testid*='next'],[data-testid*='skip-forward']," +
+                          "[aria-label*='Next'],[aria-label*='next'],[aria-label*='Successivo']"
+                        : "[data-testid*='prev'],[data-testid*='skip-back']," +
+                          "[aria-label*='Prev'],[aria-label*='prev'],[aria-label*='Precedente']";
                     webView.evaluateJavascript(
                         "(function(){" +
-                        "var kev=new KeyboardEvent('keydown',{key:'" + kbKey + "'," +
-                        "  code:'" + kbKey + "',bubbles:true,cancelable:true});" +
-                        "document.dispatchEvent(kev);window.dispatchEvent(kev);" +
-                        "var btn=document.querySelector(" + sel + ");" +
-                        "if(btn)btn.click();" +
+                        "  if(window._mcCallHandler&&window._mcCallHandler('" + msAction + "'))return;" +
+                        "  var k=new KeyboardEvent('keydown',{key:'" + kbKey + "',keyCode:" + kbCode + "," +
+                        "    which:" + kbCode + ",bubbles:true,cancelable:true});" +
+                        "  document.dispatchEvent(k);window.dispatchEvent(k);" +
+                        "  var b=document.querySelector('" + nameSel + "');" +
+                        "  if(b){b.click();return;}" +
+                        "  var pb=document.querySelector('[data-testid*=\"play\"],[data-testid*=\"pause\"]," +
+                        "    [aria-label*=\"Play\"],[aria-label*=\"Pause\"]," +
+                        "    [aria-label*=\"Riproduci\"],[aria-label*=\"Pausa\"]');" +
+                        "  if(pb&&pb.parentElement){" +
+                        "    var btns=Array.from(pb.parentElement.querySelectorAll('button,[role=\"button\"]'));" +
+                        "    var idx=btns.indexOf(pb);" +
+                        "    if(idx>=0){var t=btns[" + (isNext ? "idx+1" : "idx-1") + "];if(t)t.click();}" +
+                        "  }" +
                         "})();", null);
                     return true;
                 }
