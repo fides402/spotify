@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
+import android.view.View
 import android.widget.Button
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -52,7 +53,7 @@ class MainActivity : AppCompatActivity() {
     private fun updatePlayPauseVisibility() {
         val isPlaying = playbackService?.getPlayer()?.isPlaying == true
         findViewById<Button>(R.id.btn_play_pause).apply {
-            visibility = if (isPlaying || (playbackService?.getPlayer()?.playbackState ?: Player.STATE_IDLE) != Player.STATE_IDLE) VISIBLE else GONE
+            visibility = if (isPlaying || (playbackService?.getPlayer()?.playbackState ?: Player.STATE_IDLE) != Player.STATE_IDLE) View.VISIBLE else View.GONE
             text = if (isPlaying) getString(R.string.pause) else getString(R.string.play)
         }
     }
