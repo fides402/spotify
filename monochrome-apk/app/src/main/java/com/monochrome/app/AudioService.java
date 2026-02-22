@@ -83,18 +83,8 @@ public class AudioService extends Service {
         createNotificationChannel();
         createMediaSession();
 
-        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        AudioManager.OnAudioFocusChangeListener emptyListener = new AudioManager.OnAudioFocusChangeListener() {
-            @Override
-            public void onAudioFocusChange(int focusChange) {
-            }
-        };
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            am.requestAudioFocus(new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setOnAudioFocusChangeListener(emptyListener).build());
-        } else {
-            am.requestAudioFocus(emptyListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
-        }
+        // Removed AudioManager focus request so this app doesn't interrupt other
+        // playing media
     }
 
     @Override

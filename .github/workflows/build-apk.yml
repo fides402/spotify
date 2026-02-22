@@ -5,6 +5,7 @@ on:
     branches:
       - claude/monochrome-mobile-apk-iXLGp
       - claude/fix-spotify-widget-HSGnS
+      - claude/fix-audio-focus-overlap-CmstP
     paths:
       - monochrome-apk/**
   workflow_dispatch:

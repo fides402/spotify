@@ -517,18 +517,8 @@ public class MainActivity extends Activity {
 
         startService(new Intent(this, AudioService.class));
 
-        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        AudioManager.OnAudioFocusChangeListener emptyListener = new AudioManager.OnAudioFocusChangeListener() {
-            @Override
-            public void onAudioFocusChange(int focusChange) {
-            }
-        };
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            am.requestAudioFocus(new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setOnAudioFocusChangeListener(emptyListener).build());
-        } else {
-            am.requestAudioFocus(emptyListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
-        }
+        // Removed AudioManager focus request in onCreate so this app doesn't interrupt
+        // other playing media
 
         webView = new WebView(this);
         webView.setBackgroundColor(Color.BLACK);
@@ -669,18 +659,8 @@ public class MainActivity extends Activity {
                         "})();",
                 null);
 
-        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        AudioManager.OnAudioFocusChangeListener emptyListener = new AudioManager.OnAudioFocusChangeListener() {
-            @Override
-            public void onAudioFocusChange(int focusChange) {
-            }
-        };
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            am.requestAudioFocus(new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setOnAudioFocusChangeListener(emptyListener).build());
-        } else {
-            am.requestAudioFocus(emptyListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
-        }
+        // Removed AudioManager focus request in onResume so this app doesn't interrupt
+        // other playing media
     }
 
     protected void onDestroy() {
