@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Spotify App</string>
+    <string name="playing">In riproduzione</string>
+    <string name="notification_channel_name">Riproduzione</string>
+    <string name="play">Play</string>
+    <string name="pause">Pausa</string>
+    <string name="play_sample">Riproduci esempio</string>
+</resources>
