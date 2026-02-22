@@ -27,6 +27,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
+        android:name=".MonoApplication"
         android:label="Monochrome"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
