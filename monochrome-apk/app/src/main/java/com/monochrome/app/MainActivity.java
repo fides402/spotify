@@ -8,6 +8,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
@@ -516,6 +517,19 @@ public class MainActivity extends Activity {
 
         startService(new Intent(this, AudioService.class));
 
+        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        AudioManager.OnAudioFocusChangeListener emptyListener = new AudioManager.OnAudioFocusChangeListener() {
+            @Override
+            public void onAudioFocusChange(int focusChange) {
+            }
+        };
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            am.requestAudioFocus(new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setOnAudioFocusChangeListener(emptyListener).build());
+        } else {
+            am.requestAudioFocus(emptyListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
+
         webView = new WebView(this);
         webView.setBackgroundColor(Color.BLACK);
         setContentView(webView);
@@ -636,7 +650,8 @@ public class MainActivity extends Activity {
 
     protected void onPause() {
         super.onPause();
-        // DO NOT call webView.onPause() — keeps audio running in background
+        // DO NOT call webView.onPause() — keeps audio running in background for
+        // antigravity audio focus fix!
     }
 
     protected void onResume() {
@@ -653,6 +668,19 @@ public class MainActivity extends Activity {
                         "  window.dispatchEvent(new Event('pageshow'));" +
                         "})();",
                 null);
+
+        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        AudioManager.OnAudioFocusChangeListener emptyListener = new AudioManager.OnAudioFocusChangeListener() {
+            @Override
+            public void onAudioFocusChange(int focusChange) {
+            }
+        };
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            am.requestAudioFocus(new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setOnAudioFocusChangeListener(emptyListener).build());
+        } else {
+            am.requestAudioFocus(emptyListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
     }
 
     protected void onDestroy() {
